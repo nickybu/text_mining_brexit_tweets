@@ -1,6 +1,6 @@
 # Mining Tweets about Brexit Impact on Job Market
 
-R Pipeline for Text Mining assignment titled 'Mining Tweets about Brexit Impact on Job Market'.
+R Pipeline for Text Mining group assignment titled 'Mining Tweets about Brexit Impact on Job Market'.
 View paper [here](https://drive.google.com/open?id=1EU2ykbyAR9JQ6c8hp5zcHm5RsJylge5g).
 
 ## Abstract
