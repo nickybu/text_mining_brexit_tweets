@@ -1,0 +1,578 @@
+---
+title: "Text Mining Tweets related to Brexit and Jobs."
+# Q1: Which sectors/jobs are mostly mentioned?
+# Q2: What are the sentiments and emotions of brexit
+  # Q2a: On overall jobs in UK
+  # Q2b: On automotive industry jobs
+# Q3: Which places are mentioned when tweeting about Brexit?
+
+# To run the pipeline on the data used for analysis, skip the section 1 (Setting up rtweet) and 2 (Fetch tweets using keywords).
+
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## 1. Setting up rtweet
+# RTweet does not truncate tweets and is therefore better choice when compared to twitteR, as well as allowing more options.
+
+# install packages
+install.packages("rtweet")
+install.packages("ggplot2")
+install.packages("tm")
+
+# load packages
+library(rtweet)
+library(ggplot2)
+library(tm)
+
+# Create access token for Twitter
+create_token(
+  app = "XXX",
+  consumer_key = "XXXX",
+  consumer_secret = "XXXX",
+  access_token = "XXXX",
+  access_secret = "XXXX")
+```
+
+```{r}
+## 2. Fetch tweets using keywords
+
+# Search queries for each question
+search_query_q1 <- "brexit AND (industry OR unemployment OR jobs OR company)"
+search_query_q2a <- "brexit AND (industry OR employment OR jobs OR company OR career OR workers OR \"labour market\" OR \"job positions\" OR \"job market\" OR \"job impact\" OR \"job opportunities\")"
+search_query_q2b<- "brexit AND (car OR auto OR automotive OR vehicle OR automobil OR carmaker OR automaker)"
+search_query_q3 <- search_query_q1
+
+tweets <- search_tweets(
+    search_query_q1, n = 15000, type = "mixed", include_rts = FALSE, lang = "en"
+    )
+
+tweets_2a <- search_tweets(
+    search_query_q2a, n = 15000, type = "mixed", include_rts = FALSE, lang = "en"
+    )
+
+tweets_2b <- search_tweets(
+    search_query_q2b, n = 15000, type = "mixed", include_rts = FALSE, lang = "en"
+    )
+
+# Save tweets to CSV
+save_as_csv(tweets, "tweets.csv", prepend_ids = TRUE, na = "NA",
+  fileEncoding = "UTF-8")
+
+write.csv(tweets_2a$text, file="tweets_2a.csv") # for Q2a
+write.csv(tweets_2b$text, file="tweets_2b.csv") # for Q2b
+
+```
+
+```{r}
+## 3. Data cleaning
+# Q2 has slightly different data cleaning procedure, described in 3.4
+
+# Install packages
+install.packages("plyr")
+install.packages("stringr")
+install.packages("dplyr")
+
+# Load packages
+library(plyr)
+library(stringr)
+library(dplyr)
+library(rtweet)
+
+## 3.1 Import data
+tweets_q3 <- read.csv("tweets.csv")
+
+## 3.2 Clean data
+
+# Get subset of required columns
+tweets_q3 <- subset(tweets_q3, select=c(created_at, text))
+
+# Get rid of problem characters
+levels(tweets_q3$text) <- sapply(levels(tweets_q3$text),function(row) iconv(row, "latin1", "ASCII", sub=""))
+
+# Get rid of twitter mentions
+tweets_q3$text <- str_replace_all(tweets_q3$text,"@[a-z|A-Z|0-9]*\\_*[a-z|A-Z|0-9]*","")
+
+# Remove digits, special characters etc
+tweets_q3$text = gsub("&amp", '', tweets_q3$text)
+tweets_q3$text = gsub("@\\w+", '', tweets_q3$text)
+tweets_q3$text = gsub("[[:digit:]]", '', tweets_q3$text)
+tweets_q3$text = gsub("http\\w+", '', tweets_q3$text)
+tweets_q3$text = gsub("https://t.co/[a-zA-Z0-9]+", '', tweets_q3$text)
+tweets_q3$text = gsub("[ \t]{2,}", '', tweets_q3$text)
+tweets_q3$text = gsub("^\\s+|\\s+$", '', tweets_q3$text)
+
+# Get rid of unnecessary whitespace
+tweets_q3$text <- str_replace_all(tweets_q3$text," "," ")
+
+tweets_q3$text <- as.factor(tweets_q3$text)
+
+# Save cleaned tweets
+save_as_csv(tweets_q3, "tweets_cleaned_q3.csv", prepend_ids = TRUE, na = "NA",
+  fileEncoding = "UTF-8")
+
+## 3.3 Further data cleaning for Q1
+install.packages("tm")
+install.packages("SnowballC")
+install.packages("topicmodels")
+install.packages("wordcloud")
+install.packages("lda")
+
+options(stringsAsFactors = FALSE)
+
+# Load packages
+library(tm)
+library(SnowballC)
+library(wordcloud)
+require(topicmodels)
+library(lda)
+
+# process tweets to remove stop words, punctuations, numbers and whitespaces
+tweets_q1 <- tweets_q3
+tweets_q1 <- tweets_q1 %>% mutate(doc_id = 1:n())
+tweets_q1 <- tweets_q1 %>% mutate(doc_id = 1:n()) %>% select(doc_id, everything())
+corpus <- Corpus(DataframeSource(tweets_q1))
+processedCorpus <- tm_map(corpus, content_transformer(tolower))
+processedCorpus <- tm_map(processedCorpus, removeWords, c(stopwords("english"),"brexit","jobs","will", "like", "dont","first"))
+processedCorpus <- tm_map(processedCorpus, removePunctuation, preserve_intra_word_dashes=TRUE)
+processedCorpus <- tm_map(processedCorpus, removeNumbers)
+processedCorpus <- tm_map(processedCorpus, stemDocument, language = "en")
+processedCorpus <- tm_map(processedCorpus, stripWhitespace)
+
+save_as_csv(tweets_q1, "tweets_cleaned_q1.csv", prepend_ids = TRUE, na = "NA",
+  fileEncoding = "UTF-8")
+
+## 3.4 Data cleaning for Q2
+
+# install rtweet from CRAN
+install.packages("syuzhet")
+install.packages("plotly")
+install.packages("tm")
+
+# load packages
+library(syuzhet)
+library(plotly)
+library(tm)
+
+# function to clean twitter data to use in emotion and sentiment analysis
+clean_data_emotion_sentiment_analysis <- function(name_of_csv) 
+{
+    # Parameters
+    # name_of_csv: name of csv file having twitter data
+    tweets_csv <- read.csv(name_of_csv)
+    tweets = tweets_csv$x
+    
+    # remove retweet entities
+    tweets = gsub('(RT|via)((?:\\b\\W*@\\w+)+)', '', tweets)
+    
+    # remove at people
+    tweets = gsub('@\\w+', '', tweets)
+    
+    # remove punctuation
+    tweets = gsub('[[:punct:]]', '', tweets)
+    
+    # remove numbers
+    tweets = gsub('[[:digit:]]', '', tweets)
+    
+    # remove html links
+    tweets = gsub('http\\w+', '', tweets)
+    
+    # remove unnecessary spaces
+    tweets = gsub('[ \t]{2,}', '', tweets)
+    tweets = gsub('^\\s+|\\s+$', '', tweets)
+    
+    # remove emojis or special characters
+    tweets = gsub('<.*>', '', enc2native(tweets))
+    
+    # convert tweets to lower case
+    tweets = tolower(tweets)
+    
+    # name the file
+    clean_name_of_csv = paste("cleaned",name_of_csv, sep="_")
+    
+    # save clean data into csv for future use
+    write.csv(tweets, file=clean_name_of_csv)
+}
+
+# import your dataset to clean
+clean_data_emotion_sentiment_analysis("tweets_2a.csv")
+clean_data_emotion_sentiment_analysis("tweets_2b.csv")
+
+```
+
+```{r}
+## Analysis for Q1: Which sectors/jobs are mostly mentioned?
+library(tm)
+require(topicmodels)
+
+textdata <- read.csv("tweets_cleaned_q1.csv")
+
+# compute document term matrix with terms >= minimumFrequency
+minimumFrequency <- 5
+DTM <- DocumentTermMatrix(processedCorpus, control = list(bounds = list(global = c(minimumFrequency, Inf))))
+
+# have a look at the number of documents and terms in the matrix
+dim(DTM)
+
+# due to vocabulary pruning, we have empty rows in our DTM
+# LDA throws an error with these So we remove those docs from the
+# DTM and the metadata
+sel_idx <- slam::row_sums(DTM) > 0
+DTM <- DTM[sel_idx, ]
+textdata <- textdata[sel_idx, ]
+
+# load package topicmodels
+require(topicmodels)
+# number of topics
+K <- 5
+# set random number generator seed
+set.seed(9161)
+# compute the LDA model, inference via 1000 iterations of Gibbs sampling
+topicModel <- LDA(DTM, K, method="Gibbs", control=list(iter = 500, verbose = 25, alpha=0.2))
+
+tmResult <- posterior(topicModel)
+# topics are probability distribtions over the entire vocabulary
+beta <- tmResult$terms   # get beta from results
+dim(beta)  # K distributions over nTerms(DTM) terms
+
+# for every document we have a probaility distribution of its contained topics
+theta <- tmResult$topics
+dim(theta)               # nDocs(DTM) distributions over K topics
+
+terms(topicModel, 10)
+
+require(wordcloud)
+
+topic_word_cloud <- function(topic_To_Viz) 
+{
+  top20terms <- sort(tmResult$terms[topic_To_Viz,], decreasing=TRUE)[1:20]
+  words <- names(top20terms)
+  # extract the probabilites of each of the 20 terms
+  probabilities <- sort(tmResult$terms[topic_To_Viz,], decreasing=TRUE)[1:20]
+  # visualize the terms as wordcloud
+  mycolors <- brewer.pal(8, "Dark2")
+  wordcloud(words, probabilities, random.order = FALSE, color = mycolors)
+}
+
+# visualize topics as word cloud-1
+topicToViz <- 1
+topic_word_cloud(topicToViz)
+
+# visualize topics as word cloud-2
+topicToViz <- 2
+topic_word_cloud(topicToViz)
+
+# visualize topics as word cloud-3
+topicToViz <- 3
+topic_word_cloud(topicToViz)
+
+# visualize topics as word cloud-4
+topicToViz <- 4
+topic_word_cloud(topicToViz)
+
+# visualize topics as word cloud-5
+topicToViz <- 5
+topic_word_cloud(topicToViz)
+
+topicNames <- apply(lda::top.topic.words(beta, 5, by.score = T), 2, paste, collapse = " ")
+
+## What are the most probable topics in the entire collection?
+topicProportions <- colSums(theta) / nDocs(DTM)  # mean probablities over all paragraphs
+names(topicProportions) <- topicNames     # assign the topic names we created before
+sort(topicProportions, decreasing = TRUE) # show summed proportions in decreased order
+
+countsOfPrimaryTopics <- rep(0, K)
+names(countsOfPrimaryTopics) <- topicNames
+for (i in 1:nDocs(DTM)) {
+  topicsPerDoc <- theta[i, ] # select topic distribution for document i
+  # get first element position from ordered list
+  primaryTopic <- order(topicsPerDoc, decreasing = TRUE)[1]
+  countsOfPrimaryTopics[primaryTopic] <- countsOfPrimaryTopics[primaryTopic] + 1
+}
+sort(countsOfPrimaryTopics, decreasing = TRUE)
+
+```
+
+```{r}
+## Analysis for Q2 continued: What are the sentiments for brexit over automative industry and jobs?
+
+## Sentiment Analysis
+
+# install rtweet from CRAN
+install.packages("plyr")
+install.packages("stringr")
+install.packages("ggplot2")
+install.packages("tm")
+install.packages("scales")
+
+#loading the library
+library(plyr)
+library(stringr)
+library(ggplot2)
+library(tm)
+library(scales)
+
+# function to calculate sentiment score
+score.sentiment <- function(sentences, pos.words, neg.words, .progress='none', pos, neg)
+{
+  # Parameters
+  # sentences: vector of text to score
+  # pos.words: vector of words of postive sentiment
+  # neg.words: vector of words of negative sentiment
+  # .progress: passed to laply() to control of progress bar
+  # pos: positive words file object
+  # neg: negative words file object
+
+  # create simple array of scores with laply
+  scores <- laply(sentences,
+                  function(sentence, pos.words, neg.words)
+                  {
+                    # remove punctuation
+                    sentence <- gsub("[[:punct:]]", "", sentence)
+                    # remove control characters
+                    sentence <- gsub("[[:cntrl:]]", "", sentence)
+                    # remove digits
+                    sentence <- gsub('\\d+', '', sentence)
+
+                    #convert to lower
+                    sentence <- tolower(sentence)
+
+
+                    # split sentence into words with str_split (stringr package)
+                    word.list <- str_split(sentence, "\\s+")
+                    words <- unlist(word.list)
+
+                    # compare words to the dictionaries of positive & negative terms
+                    pos.matches <- match(words, pos)
+                    neg.matches <- match(words, neg)
+
+                    # get the position of the matched term or NA
+                    # we just want a TRUE/FALSE
+                    pos.matches <- !is.na(pos.matches)
+                    neg.matches <- !is.na(neg.matches)
+
+                    # final score
+                    score <- sum(pos.matches) - sum(neg.matches)
+                    return(score)
+                  }, pos.words, neg.words, .progress=.progress )
+  # data frame with scores for each sentence
+  scores.df <- data.frame(text=sentences, score=scores)
+  return(scores.df)
+}
+
+# function to create and visualize sentiment analysis
+sentiment_in_tweets <- function(name_of_csv, topic)
+{
+    # Parameters
+    # name_of_csv: name of csv containing the tweets
+    # topic: topic for sentiment
+    tweets <- read.csv(name_of_csv)
+    tweets.df = tweets$x
+
+    tweets.df <- sapply(tweets.df,function(row) iconv(row, "latin1", "ASCII", sub=""))
+    tweets.df<-tolower(tweets.df)
+
+    #get rid of unnecessary spaces
+    tweets.df <- str_replace_all(tweets.df," "," ")
+    
+    # Take out retweet header, there is only one
+    tweets.df <- str_replace(tweets.df,"RT @[a-z,A-Z]*: ","")
+    # Get rid of hashtags
+    tweets.df <- str_replace_all(tweets.df,"#[a-z,A-Z]*","")
+    # Get rid of references to other screennames
+    tweets.df <- str_replace_all(tweets.df,"@[a-z,A-Z]*","")  
+
+    # Reading the Lexicon positive and negative words
+    pos <- readLines("positive_words.txt")
+    neg <- readLines("negative_words.txt")
+
+    #sentiment score
+    scores_twitter <- score.sentiment(tweets.df, pos.txt, neg.txt, .progress='text', pos, neg)
+
+    #Summary of the sentiment scores
+    summary(scores_twitter)
+
+    scores_twitter$score_chr <- ifelse(scores_twitter$score < 0,'Negtive', ifelse(scores_twitter$score > 0, 'Positive', 'Neutral'))
+
+    View(scores_twitter)
+
+    #Convert score_chr to factor for visualizations
+    scores_twitter$score_chr <- as.factor(scores_twitter$score_chr)
+    names(scores_twitter)[3]<-paste("Sentiment")  
+    
+    # y axis lable
+    title = paste("Sentiments for ", topic, sep=" ")
+
+    #plot to show number of negative, positive and neutral comments
+    Viz1 <- ggplot(scores_twitter, aes(x=Sentiment, fill=Sentiment)) + 
+      geom_bar(aes(y = (..count..)/sum(..count..))) +
+      scale_y_continuous(labels = percent)+labs(y="Score")+
+      theme(text =element_text(size=15))+theme(axis.text = element_text(size=15))+ theme(legend.position="none") +
+      coord_cartesian(ylim=c(0,0.6)) + scale_fill_manual(values=c("firebrick1", "grey50", "limeGREEN")) +
+      ggtitle(title)
+    
+    Viz1
+
+}
+
+
+# Sentiment Analysis for tweets
+sentiment_in_tweets("cleaned_tweets_2a.csv", "Brexit Jobs")
+sentiment_in_tweets("cleaned_tweets_2b.csv", "Auto Industry Brexit Jobs")
+
+```
+
+```{r}
+## Analysis for Q2: What are the emotions and sentiments for the automative industry and Brexit?
+
+## Emotions in Tweets
+
+# install rtweet from CRAN
+install.packages("syuzhet")
+install.packages("plotly")
+install.packages("tm")
+
+# load packages
+library(syuzhet)
+library(plotly)
+library(tm)
+
+# function to fetch emotions from tweet
+emotions_in_tweets <- function(name_of_csv, topic) 
+{
+  
+    # Parameters
+    # name_of_csv: name of csv containing the tweets
+    # topic: topic for emotions
+    tweets_csv <- read.csv(name_of_csv)
+    tweets = tweets_csv$x
+
+    tweets <- sapply(tweets,function(row) iconv(row, "latin1", "ASCII", sub=""))
+
+    # find emotions in tweets
+    emotions <- get_nrc_sentiment(tweets)
+    emo_bar = colSums(emotions)
+    emo_sum = data.frame(count=emo_bar, emotion=names(emo_bar))
+    emo_sum$emotion = factor(emo_sum$emotion, levels=emo_sum$emotion[order(emo_sum$count, decreasing = TRUE)])
+
+    emo_sum <- emo_sum[1:8,]
+    emo_sum$percent<-(emo_sum$count/sum(emo_sum$count))*100
+    
+    plot_title = paste("Emotion Analysis of",topic, sep=" ")
+
+    #Visualize the emotions from NRC sentiments
+    plot_ly(emo_sum, x=~emotion, y=~percent, type="bar", color=~emotion) %>%
+    layout(xaxis=list(title=""),  yaxis = list(title = "Emotion count"),
+    showlegend=FALSE,title=plot_title) %>%
+    layout(yaxis = list(ticksuffix = "%"))
+}
+
+# Emotions Analysis of tweets
+emotions_in_tweets("cleaned_tweets_2a.csv", "Brexit on Jobs")
+emotions_in_tweets("cleaned_tweets_2b.csv", "Brexit on Auto Industry Jobs")
+
+```
+
+```{r}
+# Analysis for Q3: Which places are mentioned when tweeting about Brexit?
+
+# Named Entity Recognition
+
+# Install OpenNLP package
+install.packages(c("NLP", "openNLP", "rJava"))
+
+library(rJava)
+library(NLP)
+library(openNLP)
+library(openNLPmodels.en)
+
+# Import CSV file
+dataset <- read.csv("tweets_cleaned_q3.csv")
+tweet_text <- dataset$text
+
+# Create annotators
+word_ann <- Maxent_Word_Token_Annotator()
+sent_ann <- Maxent_Sent_Token_Annotator()
+location_ann <- Maxent_Entity_Annotator(kind = "location")
+
+ner <- function(t) {
+  ## Apply sentence and word tokenization
+  t_ann <- annotate(t, list(sent_ann, word_ann))
+  ## Get locations as string with sep = ", "
+  locations <- paste(t[location_ann(t, t_ann)], collapse=', ')
+  return(locations)
+}
+
+# Apply ner function to each row(tweet)
+tweet_text <- sapply(tweet_text,function(row) ner(as.String(row)))
+
+# Remove the word 'brexit'
+tweet_text = gsub('(?i)brexit', '', tweet_text)
+
+# Add locations column to dataset
+dataset$locations <- tweet_text
+
+save_as_csv(dataset, "tweets_ner_location.csv", prepend_ids = TRUE, na = "NA", fileEncoding = "UTF-8")
+
+# Visualisations
+
+# Import CSV file
+dataset <- read.csv("tweets_ner_location.csv")
+
+# Load the libraries
+install.packages(c("plyr", "stringr", "tm", "wordcloud2"))
+
+library(plyr)
+library(stringr)
+library(tm)
+library(wordcloud2)
+
+# Get frequency of tweets over time
+jpeg("tweet_freq_q3.jpg", width = 500)
+ts_plot(dataset, by = "days") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = "Frequency of Twitter statuses from 24/02/19 to 06/03/19",
+    subtitle = "Twitter status (tweet) counts aggregated using daily intervals",
+    caption = "\nSource: Data collected from Twitter's REST API via rtweet"
+  )
+dev.off()
+
+# 5.2 Generate word cloud with locations
+tweets.df<- dataset$locations
+tweets.df <- sapply(tweets.df,function(row) iconv(row, "latin1", "ASCII", sub=""))
+
+loc_string <- ""
+
+for (loc in tweets.df) {
+  if(loc != ""){
+    loc_string <- paste(loc_string, loc, sep=" ")
+  }
+}
+
+## replace all full stop and comma
+loc_string <- gsub("\\.","", loc_string)
+loc_string <- gsub("\\,","", loc_string)
+loc_words <-  strsplit(loc_string, " ")
+
+loc_words.freq<-table(unlist(loc_words))
+loc_words <- as.data.frame(table(loc_words))
+save_as_csv(loc_words, "location_words.csv", prepend_ids = TRUE, na = "NA", fileEncoding = "UTF-8")
+wordcloud2(data = loc_words)
+
+# Location frequency (count) plot
+loc_words[rev(order(loc_words$Freq)),]
+loc_words[order(decreasing = TRUE, loc_words$Freq),]
+loc_words <- sort(loc_words.freq, decreasing = TRUE)
+
+jpeg("loc_freq_q3.jpg", width = 500) # height and width can choose as your wish
+barplot(loc_words[1:10], main="Location Frequency",
+  ylab="Frequency", las=2)
+dev.off()
+```
